@@ -1,0 +1,35 @@
+# ===== PyTorch 核心 =====
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# ===== 音频处理 =====
+librosa>=0.10.0
+soundfile>=0.12.0
+numpy<2.0
+
+# ===== ONNX 推理 =====
+onnxruntime>=1.15.0
+
+# ===== 模型加载 =====
+transformers>=4.43.0,<=4.50.0
+peft<0.18.0
+sentencepiece>=0.1.99
+
+# ===== Web 服务 =====
+fastapi>=0.115.0
+uvicorn[standard]>=0.24.0
+
+# ===== 文本前端（GPT-SoVITS 依赖） =====
+pypinyin>=0.49.0
+jieba>=0.42.1
+cn2an>=0.5.22
+opencc>=1.0.0
+split-lang>=1.0.0
+fast_langdetect>=0.3.0
+g2p_en>=2.1.0
+
+# ===== 工具 =====
+pyyaml>=6.0
+chardet>=5.0
+psutil>=5.9.0
+tqdm>=4.65.0

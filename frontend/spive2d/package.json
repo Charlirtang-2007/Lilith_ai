@@ -1,0 +1,41 @@
+{
+  "name": "spive2d",
+  "version": "0.1.39",
+  "description": "AI 桌宠前端 - 基于 Spive2D",
+  "type": "module",
+  "scripts": {
+    "dev": "svelte-kit sync && vite dev",
+    "build": "svelte-kit sync && vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json",
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json --watch",
+    "tauri": "tauri"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-fs": "^2.5.1",
+    "@tauri-apps/plugin-opener": "^2.5.4",
+    "@tauri-apps/plugin-window-state": "^2.0.0",
+    "mediabunny": "^1.50.8"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@sveltejs/kit": "^2.69.2",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@tauri-apps/cli": "^2.11.4",
+    "svelte": "^5.56.4",
+    "svelte-check": "^4.7.2",
+    "typescript": "~7.0.2",
+    "vite": "^8.1.4"
+  },
+  "overrides": {
+    "cookie": "^0.7.2",
+    "postcss": "^8.5.14",
+    "devalue": "^5.8.1",
+    "ip-address": "^10.2.0",
+    "basic-ftp": "^6.0.1",
+    "ws": "^8.20.1"
+  }
+}

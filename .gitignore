@@ -1,0 +1,169 @@
+### AL ###
+#Template for AL projects for Dynamics 365 Business Central
+#launch.json folder
+.vscode/
+#Cache folder
+.alcache/
+#Symbols folder
+.alpackages/
+#Snapshots folder
+.snapshots/
+#Testing Output folder
+.output/
+#Extension App-file
+*.app
+#Rapid Application Development File
+rad.json
+#Translation Base-file
+*.g.xlf
+#License-files
+*.bclicense
+*.flf
+#Test results file
+TestResults.xml
+# ===================================================
+#  Python 通用
+# ===================================================
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.tox/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ===================================================
+#  虚拟环境
+# ===================================================
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+*.env
+*.env.local
+
+# ===================================================
+#  后端 (backend/)
+# ===================================================
+backend/memory_db/
+backend/temp_audios/
+backend/user_facts.json
+backend/*.db
+backend/*.sqlite3
+backend/.env
+backend/__pycache__/
+backend/*.log
+backend/test_*.py
+backend/all_installed.txt
+backend/requirements_clean.txt
+
+# ===================================================
+#  前端 (frontend/)
+# ===================================================
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+frontend/dist/
+frontend/src-tauri/target/
+frontend/src-tauri/gen/
+frontend/*.log
+frontend/.env
+frontend/.env.local
+frontend/bun.lock
+frontend/package-lock.json
+
+# ===================================================
+#  TTS (tts/)
+# ===================================================
+tts/.venv/
+tts/venv/
+tts/logs/
+tts/output/
+tts/TEMP/
+tts/__pycache__/
+tts/*.log
+tts/.env
+tts/*.db
+tts/*.sqlite3
+tts/requirements_clean.txt
+
+# ===================================================
+#  ✅ 模型权重（通过 Git LFS 或 Release 分发）
+# ===================================================
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+*.pt
+*.h5
+*.keras
+*.pb
+*.tflite
+
+# ===================================================
+#  ✅ 音频文件
+# ===================================================
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.aac
+*.m4a
+*.webm
+
+# ===================================================
+#  配置文件（敏感）
+# ===================================================
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.crt
+*.csr
+
+# ===================================================
+#  编辑器 / IDE
+# ===================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===================================================
+#  系统文件
+# ===================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ===================================================
+#  压缩包（模型/数据）
+# ===================================================
+*.zip
+*.7z
+*.rar
+*.tar.gz
+*.tgz
+*.tar
