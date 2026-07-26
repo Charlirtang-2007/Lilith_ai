@@ -11,12 +11,6 @@ class Config:
     #截图功能
     ENABLE_VISION = os.getenv("ENABLE_VISION", "false").lower() == "true"
 
-    # ===== TTS 本地服务 =====
-    TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "http://127.0.0.1:9880")
-    TTS_REF_WAV_PATH = os.getenv("TTS_REF_WAV_PATH", "./ref_audio/lilith_ref.wav")
-    TTS_PROMPT_TEXT = os.getenv("TTS_PROMPT_TEXT", "这样一来我们就离得更近了所以")
-    TTS_PROMPT_LANG = os.getenv("TTS_PROMPT_LANG", "zh")
-
     # Profile / Intent
     PROFILE_KEY = os.getenv("PROFILE_LLM_KEY")
     PROFILE_BASE = os.getenv("PROFILE_LLM_BASE")
@@ -27,6 +21,11 @@ class Config:
     # TTS_MODEL = os.getenv("TTS_MODEL")
     # TTS_VOICE = os.getenv("TTS_VOICE")
     STT_MODEL = os.getenv("STT_MODEL", "FunAudioLLM/SenseVoiceSmall")
+
+    # 闹钟配置
+    ALARM_ENABLED = os.getenv("ALARM_ENABLED", "true").lower() == "true"
+    ALARM_CHECK_INTERVAL = int(os.getenv("ALARM_CHECK_INTERVAL", "10"))
+    ALARM_DEFAULT_MESSAGE = os.getenv("ALARM_DEFAULT_MESSAGE", "⏰ 闹钟时间到了！")
 
     # Proxy
     PROXY = os.getenv("PROXY_URL")
