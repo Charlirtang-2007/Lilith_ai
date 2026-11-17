@@ -54,35 +54,38 @@ venv.bak/
 *.env
 *.env.local
 
-# ===================================================
-#  后端 (backend/)
-# ===================================================
-backend/memory_db/
-backend/temp_audios/
-backend/user_facts.json
-backend/*.db
-backend/*.sqlite3
-backend/.env
-backend/__pycache__/
-backend/*.log
-backend/test_*.py
-backend/all_installed.txt
-backend/requirements_clean.txt
+# pnpm 本地 store
+.pnpm-store/
 
 # ===================================================
-#  前端 (frontend/)
+#  后端 (backend/) —— 运行时数据统一放在 data/
 # ===================================================
-frontend/node_modules/
-frontend/.svelte-kit/
-frontend/build/
-frontend/dist/
-frontend/src-tauri/target/
-frontend/src-tauri/gen/
-frontend/*.log
-frontend/.env
-frontend/.env.local
-frontend/bun.lock
-frontend/package-lock.json
+data/
+backend/.env
+backend/.venv/
+backend/__pycache__/
+backend/models/
+backend/*.log
+
+# ===================================================
+#  前端 (frontend/app/)
+# ===================================================
+frontend/app/node_modules/
+frontend/app/.svelte-kit/
+frontend/app/build/
+frontend/app/dist/
+frontend/app/src-tauri/target/
+frontend/app/src-tauri/gen/
+frontend/app/.env
+frontend/app/.env.local
+frontend/app/bun.lock
+frontend/app/package-lock.json
+frontend/app/pnpm-lock.yaml
+frontend/app/*.log
+
+# Live2D 模型：授权明确可再分发的才提交，其余放本地
+frontend/app/static/live2d/*/
+!frontend/app/static/live2d/character/
 
 # ===================================================
 #  TTS (tts/)

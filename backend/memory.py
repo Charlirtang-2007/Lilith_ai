@@ -4,20 +4,22 @@ import os
 import random
 import uuid
 import datetime
-import chromadb
-from chromadb.config import Settings
-from services import AIService
 import asyncio
+
+import chromadb
+
+from config import data_dir
+from services import AIService
 
 
 class MemorySystem:
     def __init__(self):
         # 1. 向量库 (存经历/对话片段)
-        self.chroma = chromadb.PersistentClient(path="./memory_db")
+        self.chroma = chromadb.PersistentClient(path=str(data_dir() / "chroma"))
         self.episodic_col = self.chroma.get_or_create_collection("episodes")
         
         # 2. 事实库 (存属性 JSON)
-        self.facts_path = "user_facts.json"
+        self.facts_path = str(data_dir() / "user_facts.json")
         self.facts = self._load_facts()
         self._facts_lock = asyncio.Lock()  # 新加
 

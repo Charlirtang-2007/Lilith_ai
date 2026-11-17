@@ -240,6 +240,29 @@ def is_full(*items):  # 任意一项为空返回False
 bigvgan_model = hifigan_model = sv_cn_model = None
 
 
+# ===== 安全加固：默认拒绝一切危险入口 =====
+# 本服务只接受 {text, text_language}，不做模型热切换 / 参考音频切换 / 进程控制。
+# 通过环境变量 TTS_ALLOW_ADMIN=1 才放开 /set_model /control /change_refer（仅限本机调试）。
+ADMIN_ENDPOINTS_ENABLED = os.getenv("TTS_ALLOW_ADMIN", "0") == "1"
+
+def safe_torch_load(path, map_location="cpu"):
+    """只加载张量/基础类型，杜绝权重文件反序列化执行任意代码。"""
+    return torch.load(
+        path,
+        map_location=map_location,
+        weights_only=True,
+    )
+
+
+def _admin_guard():
+    if not ADMIN_ENDPOINTS_ENABLED:
+        return JSONResponse(
+            {"code": 403, "message": "管理接口已禁用（设置 TTS_ALLOW_ADMIN=1 可临时开启）"},
+            status_code=403,
+        )
+    return None
+
+
 def clean_hifigan_model():
     global hifigan_model
     if hifigan_model:
@@ -305,10 +328,8 @@ def init_hifigan():
     )
     hifigan_model.eval()
     hifigan_model.remove_weight_norm()
-    state_dict_g = torch.load(
-        "%s/GPT_SoVITS/pretrained_models/gsv-v4-pretrained/vocoder.pth" % (now_dir,),
-        map_location="cpu",
-        weights_only=False,
+    state_dict_g = safe_torch_load(
+        "%s/GPT_SoVITS/pretrained_models/gsv-v4-pretrained/vocoder.pth" % (now_dir,)
     )
     print("loading vocoder", hifigan_model.load_state_dict(state_dict_g))
     if is_half == True:
@@ -512,7 +533,7 @@ hz = 50
 
 
 def get_gpt_weights(gpt_path):
-    dict_s1 = torch.load(gpt_path, map_location="cpu", weights_only=False)
+    dict_s1 = safe_torch_load(gpt_path)
     config = dict_s1["config"]
     max_sec = config["data"]["max_sec"]
     t2s_model = Text2SemanticLightningModule(config, "****", is_train=False)
@@ -1274,6 +1295,9 @@ app = FastAPI()
 
 @app.post("/set_model")
 async def set_model(request: Request):
+    guard = _admin_guard()
+    if guard:
+        return guard
     json_post_raw = await request.json()
     return change_gpt_sovits_weights(
         gpt_path=json_post_raw.get("gpt_model_path"), sovits_path=json_post_raw.get("sovits_model_path")
@@ -1285,22 +1309,34 @@ async def set_model(
     gpt_model_path: str = None,
     sovits_model_path: str = None,
 ):
+    guard = _admin_guard()
+    if guard:
+        return guard
     return change_gpt_sovits_weights(gpt_path=gpt_model_path, sovits_path=sovits_model_path)
 
 
 @app.post("/control")
 async def control(request: Request):
+    guard = _admin_guard()
+    if guard:
+        return guard
     json_post_raw = await request.json()
     return handle_control(json_post_raw.get("command"))
 
 
 @app.get("/control")
 async def control(command: str = None):
+    guard = _admin_guard()
+    if guard:
+        return guard
     return handle_control(command)
 
 
 @app.post("/change_refer")
 async def change_refer(request: Request):
+    guard = _admin_guard()
+    if guard:
+        return guard
     json_post_raw = await request.json()
     return handle_change(
         json_post_raw.get("refer_wav_path"), json_post_raw.get("prompt_text"), json_post_raw.get("prompt_language")
@@ -1309,16 +1345,25 @@ async def change_refer(request: Request):
 
 @app.get("/change_refer")
 async def change_refer(refer_wav_path: str = None, prompt_text: str = None, prompt_language: str = None):
+    guard = _admin_guard()
+    if guard:
+        return guard
     return handle_change(refer_wav_path, prompt_text, prompt_language)
 
 
 @app.post("/")
 async def tts_endpoint(request: Request):
     json_post_raw = await request.json()
+    # 安全：参考音频只允许使用启动参数 / 服务端配置，不接受请求方指定路径
+    if any(json_post_raw.get(k) for k in ("refer_wav_path", "prompt_text", "prompt_language", "inp_refs")):
+        return JSONResponse(
+            {"code": 400, "message": "不接受请求级别的参考音频，请使用服务端预设"},
+            status_code=400,
+        )
     return handle(
-        json_post_raw.get("refer_wav_path"),
-        json_post_raw.get("prompt_text"),
-        json_post_raw.get("prompt_language"),
+        None,
+        None,
+        None,
         json_post_raw.get("text"),
         json_post_raw.get("text_language"),
         json_post_raw.get("cut_punc"),
@@ -1348,10 +1393,15 @@ async def tts_endpoint(
     sample_steps: int = 32,
     if_sr: bool = False,
 ):
+    if not ADMIN_ENDPOINTS_ENABLED and any([refer_wav_path, prompt_text, prompt_language, inp_refs]):
+        return JSONResponse(
+            {"code": 400, "message": "不接受请求级别的参考音频，请使用服务端预设"},
+            status_code=400,
+        )
     return handle(
-        refer_wav_path,
-        prompt_text,
-        prompt_language,
+        refer_wav_path if ADMIN_ENDPOINTS_ENABLED else None,
+        prompt_text if ADMIN_ENDPOINTS_ENABLED else None,
+        prompt_language if ADMIN_ENDPOINTS_ENABLED else None,
         text,
         text_language,
         cut_punc,

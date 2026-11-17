@@ -1,0 +1,32 @@
+{
+  "name": "lilith-pet",
+  "version": "0.2.0",
+  "description": "AI 桌面宠物前端（Tauri + SvelteKit + Live2D）",
+  "type": "module",
+  "scripts": {
+    "dev": "svelte-kit sync && vite dev",
+    "build": "svelte-kit sync && vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json",
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json --watch",
+    "tauri": "tauri"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@sveltejs/kit": "^2.69.2",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@tauri-apps/cli": "^2.11.4",
+    "svelte": "^5.56.4",
+    "svelte-check": "^4.7.2",
+    "typescript": "~6.0.0",
+    "vite": "^8.1.4"
+  },
+  "overrides": {
+    "cookie": "^0.7.2",
+    "devalue": "^5.8.1"
+  }
+}
