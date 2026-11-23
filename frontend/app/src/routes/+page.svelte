@@ -1,520 +1,881 @@
 <script>
-  import { onMount, tick } from 'svelte';
-  import { createRenderer } from '$lib/renderer/createRenderer.js';
-  import { getRenderer, setRenderer } from '$lib/rendererStore.svelte.js';
-  import { appState } from '$lib/appState.svelte.js';
-  import { BACKEND_HTTP, BACKEND_WS, LIVE2D_MODEL_DIR, MODEL_SCALE, IDLE_SWITCH_MS, EMOTION_MOTIONS } from '../config.js';
+  /**
+   * Lilith · desktop companion shell.
+   *
+   * Responsibilities are deliberately narrow: wire the brain (WebSocket), the
+   * voice playback, the character stage and the window behaviours together.
+   * Visual work lives in `$lib/components/*`; Live2D work lives in
+   * `$lib/live2d/Live2DRenderer.js`.
+   */
+  import { onMount, onDestroy } from 'svelte';
+  import Ambient from '$lib/components/Ambient.svelte';
+  import CharacterStage from '$lib/components/CharacterStage.svelte';
+  import TopChrome from '$lib/components/TopChrome.svelte';
+  import SpeechBubble from '$lib/components/SpeechBubble.svelte';
+  import Dock from '$lib/components/Dock.svelte';
+  import ChatDrawer from '$lib/components/ChatDrawer.svelte';
+  import ExpressionShelf from '$lib/components/ExpressionShelf.svelte';
+  import SettingsSheet from '$lib/components/SettingsSheet.svelte';
+  import ContextMenu from '$lib/components/ContextMenu.svelte';
+  import ToastHost from '$lib/components/ToastHost.svelte';
+  import { PetSocket } from '$lib/net/PetSocket.svelte.js';
+  import { AudioEngine } from '$lib/audio/AudioEngine.js';
+  import { settings } from '$lib/settings.svelte.js';
+  import { toast, dismissToast } from '$lib/toast.svelte.js';
+  import {
+    buildShelf,
+    emotionToLook,
+    getEmotion,
+    shelfIdToLook,
+    shelfLabel,
+  } from '$lib/expressions.js';
+  import { IS_TAURI } from '$lib/runtime.js';
+  import {
+    initWindowBridge,
+    disposeWindowBridge,
+    setAlwaysOnTop,
+    setIgnoreCursorEvents,
+    closeWindow,
+    focusWindow,
+    cursorLocalPosition,
+  } from '$lib/tauri/windowBridge.js';
+  import { BACKEND_HTTP, PET_NAME } from '../config.js';
 
-  let canvasContainer = $state();
-  let renderer = null;
+  const isTauri = IS_TAURI;
+  const audio = new AudioEngine();
+  const ONBOARD_KEY = 'lilith.v3.onboarded';
 
-  // ===== UI 状态 =====
-  let showDragBar = $state(false);
-  let showChat = $state(false);
-  let chatLocked = $state(false);
-  let mouseInWindow = $state(false);
-  let lockReleaseTimer = null;
-  let isTauri = $state(false);
-  let appWindow = null;
+  const POKE_LINES = [
+    '呀…别戳啦。',
+    '嗯？怎么啦？',
+    '再戳就要生气了哦。',
+    '我在呢，一直都在。',
+    '……有点痒。',
+    '今天也辛苦了。',
+  ];
 
-  // ===== WebSocket =====
-  let ws = null;
+  // ----- conversation -----
   let messages = $state([]);
-  let inputText = $state('');
-  let wsConnected = $state(false);
-  let reconnectTimer = null;
+  let unread = $state(0);
+  let bubble = $state(null);
+  let emotion = $state('neutral');
+  let manualLook = $state(null);
+  let audioPlaying = $state(false);
+  let messageSeq = 0;
+  let playbackToken = 0;
+  let audioWarned = false;
+  let audioUnlocked = false;
+  let pseudoTimer = 0;
+  let bubbleTimer = 0;
+  let emotionTimer = 0;
+  let lastPokeLine = '';
+  let onboardToastId = null;
+  let onboardTimer = 0;
 
-  // ===== 模型变换 =====
-  let scale = $state(MODEL_SCALE);
+  // ----- stage -----
+  let stage = null;
+  let stageStatus = $state('loading');
+  let modelInfo = $state(null);
 
-  // ===== 输入框 =====
-  let inputEl = $state(null);
-  let inputFocused = $state(false);
+  // ----- overlays -----
+  let drawerOpen = $state(false);
+  let settingsOpen = $state(false);
+  let exprOpen = $state(false);
+  let menu = $state(null);
+  let focusToken = $state(0);
 
-  // ===== 情绪 =====
-  let currentEmotion = '';
-  let pendingEmotion = null;
-  let emotionTimer = null;
-  let leaveTimer = null;
+  // ----- window / tauri -----
+  let windowReady = $state(false);
+  let unlistenBackend = null;
+  let interactionTimer = 0;
+  let ignoreCursor = false;
+  let lastHitAt = 0;
+  let checkingPointer = false;
+  let offlineHintTimer = 0;
+  let connectionCount = 0;
+  let destroyed = false;
 
-  // ===== 音频 =====
-  let audioCtxUnlocked = false;
-  let audioAutoplayUnlocked = false;
+  const socket = new PetSocket({
+    onPacket: handlePacket,
+    onOpen: handleSocketOpen,
+    onClose: handleSocketClose,
+  });
 
-  function updateMouseThrough() {
-    if (!appWindow) return;
-    const shouldIgnore = mouseInWindow && !showChat && !showDragBar;
-    appWindow.setIgnoreCursorEvents(shouldIgnore);
-    document.body.style.cursor = shouldIgnore ? 'none' : 'auto';
-  }
+  const uiStatus = $derived(audioPlaying ? 'speaking' : socket.brain);
+  const speaking = $derived(audioPlaying || socket.brain === 'speaking');
+  const exprOptions = $derived(buildShelf(modelInfo?.expressions || []));
+  const activeLook = $derived(manualLook);
+  const bubbleVisible = $derived(!!bubble && !drawerOpen && !settingsOpen);
 
-  async function setWindowAlwaysOnTop() {
-    if (isTauri && appWindow?.setAlwaysOnTop) {
-      await appWindow.setAlwaysOnTop(true);
-    }
-  }
+  // ----- lifecycle -----
 
-  function scheduleLockRelease() {
-    if (lockReleaseTimer) clearTimeout(lockReleaseTimer);
-    lockReleaseTimer = setTimeout(() => {
-      if (chatLocked && !mouseInWindow) {
-        chatLocked = false;
-        showChat = false;
-        updateMouseThrough();
-      }
-    }, 3000);
-  }
-
-  // ===== 情绪 → 动作（防抖 + 去重）=====
-  async function playEmotion(emotion) {
-    const candidates = EMOTION_MOTIONS[emotion] || [];
-    if (!candidates.length) return;
-    // 从模型里找到第一个真实存在的动作（"组名" 或 "组名,序号"）
-    const animations = (await getRenderer()?.getAnimations?.()) || [];
-    const names = new Set(animations.map((a) => a.name));
-    const values = new Set(animations.map((a) => a.value));
-    const hit = candidates.find((c) => names.has(c) || values.has(c));
-    if (!hit) {
-      console.warn(`模型里没有情绪 ${emotion} 对应的动作，保持 idle`);
-      return;
-    }
-    await getRenderer()?.setAnimation?.(hit);
-  }
-
-  function requestEmotion(emotion) {
-    if (!emotion || emotion === currentEmotion) return;
-    if (pendingEmotion === emotion) {
-      clearTimeout(emotionTimer);
-    } else {
-      pendingEmotion = emotion;
-    }
-    emotionTimer = setTimeout(() => {
-      const r = getRenderer();
-      if (r?.setAnimation) {
-        playEmotion(pendingEmotion).catch(() => {});
-        currentEmotion = pendingEmotion;
-      }
-      pendingEmotion = null;
-    }, 300);
-  }
-
-  // ===== 解锁 WebView 音频 =====
-  function unlockWebViewAudio() {
-    if (audioCtxUnlocked) return;
-    try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') {
-        audioCtx.resume().then(() => { audioCtxUnlocked = true; });
-      } else {
-        audioCtxUnlocked = true;
-      }
-    } catch (e) {
-      console.warn('⚠️ AudioContext 解锁失败:', e);
-    }
-  }
-
-  function unlockAudioAutoplay() {
-    if (audioAutoplayUnlocked) return;
-    try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = 220;
-      gain.gain.value = 0.01;
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.1);
-      audioAutoplayUnlocked = true;
-    } catch (e) {
-      console.warn('音频解锁失败:', e);
-    }
-  }
-
-  // ===== 鼠标进出 =====
-  function enter() {
-    mouseInWindow = true;
-    if (leaveTimer) { clearTimeout(leaveTimer); leaveTimer = null; }
-    if (lockReleaseTimer) { clearTimeout(lockReleaseTimer); lockReleaseTimer = null; }
-  }
-
-  function leave() {
-    mouseInWindow = false;
-    if (!chatLocked && !inputFocused) {
-      if (leaveTimer) clearTimeout(leaveTimer);
-      leaveTimer = setTimeout(() => { showChat = false; }, 2000);
-    } else if (chatLocked) {
-      scheduleLockRelease();
-    }
-    showDragBar = false;
-  }
-
-  // ===== 主初始化 =====
   onMount(() => {
-    init();
-    return cleanup;
+    if (isTauri) {
+      document.addEventListener('contextmenu', suppressNativeMenu);
+      initWindowBridge().then((ok) => {
+        if (destroyed) return;
+        windowReady = ok;
+        if (ok) startInteractionLoop();
+      });
+      setupTauriRelay();
+    }
+
+    audio.setVolume(settings.volume);
+    audio.setMuted(settings.muted);
+    window.addEventListener('wheel', handleWheel, { passive: false });
+    socket.connect();
+
+    offlineHintTimer = window.setTimeout(() => {
+      if (!destroyed && socket.phase !== 'open') {
+        toast('后端未连接：请启动 backend/main.py', 'warning', 5200);
+      }
+    }, 6500);
+
+    return () => {
+      destroyed = true;
+      clearTimeout(bubbleTimer);
+      clearTimeout(emotionTimer);
+      clearTimeout(pseudoTimer);
+      clearTimeout(offlineHintTimer);
+      clearTimeout(onboardTimer);
+      clearInterval(interactionTimer);
+      socket.dispose();
+      audio.dispose();
+      unlistenBackend?.();
+      window.removeEventListener('wheel', handleWheel);
+      document.removeEventListener('contextmenu', suppressNativeMenu);
+      if (isTauri && windowReady) setIgnoreCursorEvents(false);
+      // Drop the native geometry listeners; `setIgnoreCursorEvents` above has
+      // already captured the window handle, so ordering keeps that call valid.
+      disposeWindowBridge();
+    };
   });
 
-  async function init() {
+  onDestroy(() => {
+    destroyed = true;
+  });
+
+  async function setupTauriRelay() {
     try {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      appWindow = getCurrentWindow();
-      isTauri = true;
-    } catch {
-      isTauri = false;
-      appWindow = null;
+      const { listen } = await import('@tauri-apps/api/event');
+      const un = await listen('backend-message', (event) => {
+        if (event?.payload) handlePacket(event.payload);
+      });
+      if (destroyed) un();
+      else unlistenBackend = un;
+    } catch (err) {
+      // The WS is the primary transport; the Tauri relay is only for dev emit.
+      console.info('[tauri] relay unavailable', err);
     }
+  }
 
-    const existing = getRenderer();
-    if (existing) {
-      existing.dispose();
-      setRenderer(null);
+  function suppressNativeMenu(event) {
+    event.preventDefault();
+  }
+
+  // ----- socket wiring -----
+
+  function handleSocketOpen() {
+    connectionCount += 1;
+    if (connectionCount > 1) toast('已重新连接后端', 'success');
+  }
+
+  function handleSocketClose() {
+    if (audioPlaying) stopPlayback();
+  }
+
+  function handlePacket(packet) {
+    if (!packet || typeof packet !== 'object') return;
+    if (packet.type === 'audio_chunk') {
+      handleReply(packet.payload || {});
+    } else if (packet.type === 'system_message') {
+      handleSystem(packet.payload || {});
+    } else if (packet.type === 'text_input') {
+      handleRecognizedText(packet.payload || {});
     }
+  }
 
-    document.body.style.backgroundColor = 'transparent';
-    document.body.style.backgroundImage = 'none';
+  function handleReply(payload) {
+    const text = String(payload.text || '').trim();
+    if (!text) return;
+    const expression = payload.expression || 'neutral';
+    const audioUrl = resolveAudioUrl(payload.audio_url);
+    const message = addMessage({
+      role: 'pet',
+      text,
+      emotion: expression,
+      emotionInfo: getEmotion(expression),
+      audioUrl,
+      alarm: !!payload.is_alarm,
+    });
+    setEmotion(expression, { holdMs: payload.is_alarm ? 9000 : 14000 });
+    if (!drawerOpen && !settingsOpen) {
+      showBubble(message);
+    }
+    playReply(message);
+  }
 
-    // Live2D 场景：目录（以 / 结尾）+ 主文件（*.model3.json）
-    const dirName = LIVE2D_MODEL_DIR.endsWith('/') ? LIVE2D_MODEL_DIR : `${LIVE2D_MODEL_DIR}/`;
-    const modelName = dirName.replace(/\/$/, '').split('/').pop();
-    const fileNames = { name: modelName, mainExt: '.model3.json', files: [], isMerged: false };
+  function handleSystem(payload) {
+    const text = String(payload.text || '').trim();
+    if (!text) return;
+    const alarm = text.includes('⏰') || text.includes('闹钟');
+    addMessage({ role: 'system', text, alarm });
+    toast(text, alarm ? 'warning' : 'info', alarm ? 6000 : 3400);
+  }
 
-    renderer = createRenderer(fileNames);
-    const canvas = renderer.getCanvas();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = window.innerWidth * dpr;
-    canvas.height = window.innerHeight * dpr;
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    if (canvasContainer) canvasContainer.appendChild(canvas);
+  function handleRecognizedText(payload) {
+    const text = String(payload.text || '').trim();
+    if (!text) return;
+    addMessage({ role: 'user', text });
+    // A voice turn was accepted; make sure the chat is discoverable.
+    if (!drawerOpen) unread = Math.max(unread, 0);
+  }
 
-    if (renderer.setTextureFilter) renderer.setTextureFilter('linear');
-    renderer.resize(canvas.width, canvas.height);
+  function addMessage(partial) {
+    const message = {
+      id: ++messageSeq,
+      at: Date.now(),
+      ...partial,
+    };
+    messages.push(message);
+    if (messages.length > 200) messages.splice(0, messages.length - 200);
+    if (message.role === 'pet' && !drawerOpen) unread += 1;
+    return message;
+  }
 
-    try {
-      await renderer.load(dirName, fileNames);
-      console.log('✅ Live2D 模型加载成功');
-    } catch (e) {
-      console.error('❌ Live2D 模型加载失败:', e);
+  // ----- conversation UI -----
+
+  function openChat() {
+    drawerOpen = true;
+    settingsOpen = false;
+    menu = null;
+    bubble = null;
+    clearTimeout(bubbleTimer);
+    unread = 0;
+    focusToken += 1;
+    if (isTauri && windowReady) focusWindow();
+  }
+
+  function closeChat() {
+    drawerOpen = false;
+  }
+
+  function sendText(text) {
+    const value = String(text || '').trim();
+    if (!value) return;
+    if (!socket.open) {
+      toast('后端尚未连接，消息未发出', 'warning');
       return;
     }
-
-    renderer._scale = scale;
-    if (renderer.applyTransform) renderer.applyTransform(scale, 0, 0, 0);
-
-    setRenderer(renderer);
-    appState.initialized = true;
-
-    // 周期性随机待机动作
-    if (IDLE_SWITCH_MS > 0) {
-      const idleTimer = setInterval(() => {
-        getRenderer()?.setAnimation?.('Idle').catch(() => {});
-      }, IDLE_SWITCH_MS);
-      window.__lilithIdleTimer = idleTimer;
-    }
-
-    setTimeout(() => connectWebSocket(), 800);
-    setWindowAlwaysOnTop();
-
-    document.body.addEventListener('mouseenter', enter);
-    document.body.addEventListener('mouseleave', leave);
-    if (document.body.matches(':hover')) mouseInWindow = true;
-    updateMouseThrough();
-
-    // 首次点击解锁音频自动播放
-    document.addEventListener('click', () => unlockAudioAutoplay(), { once: true });
+    if (audioPlaying) stopPlayback();
+    if (manualLook === null && settings.autoEmotion) setEmotion('calm', { holdMs: 9000 });
+    addMessage({ role: 'user', text: value });
+    const sent = socket.sendText(value);
+    if (!sent) toast('发送失败，请稍后重试', 'error');
+    bubble = null;
+    clearTimeout(bubbleTimer);
+    unread = 0;
   }
 
-  function cleanup() {
-    document.body.removeEventListener('mouseenter', enter);
-    document.body.removeEventListener('mouseleave', leave);
-    if (lockReleaseTimer) clearTimeout(lockReleaseTimer);
-    if (window.__lilithIdleTimer) clearInterval(window.__lilithIdleTimer);
-    if (renderer) {
-      renderer.dispose();
-      setRenderer(null);
-      const canvasEl = renderer.getCanvas();
-      if (canvasEl?.parentNode) canvasEl.parentNode.removeChild(canvasEl);
-      renderer = null;
+  async function sendVoice(base64, mimeType) {
+    if (!socket.open) {
+      toast('后端尚未连接，语音未发出', 'warning');
+      return;
     }
-    if (ws) {
-      ws.onclose = null;
-      ws.close();
-    }
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    if (emotionTimer) clearTimeout(emotionTimer);
-    if (leaveTimer) clearTimeout(leaveTimer);
+    stopPlayback();
+    const sent = socket.sendAudio(base64, mimeType);
+    if (sent) toast('已发送语音，正在识别…', 'info', 2600);
+    else toast('语音发送失败', 'error');
   }
 
-  $effect(() => {
-    if (chatLocked || inputFocused) {
-      showChat = true;
+  function clearMessages() {
+    messages.splice(0, messages.length);
+    unread = 0;
+    toast('对话记录已清空', 'success');
+  }
+
+  function replayMessage(message) {
+    if (!message?.audioUrl) return;
+    stopPlayback();
+    setEmotion(message.emotion || 'neutral', { holdMs: 8000 });
+    if (!drawerOpen && !settingsOpen) showBubble(message);
+    playReply(message);
+  }
+
+  function stopCurrent() {
+    if (socket.brain === 'thinking') {
+      socket.interrupt();
+      toast('已发送打断请求', 'info');
+    }
+    stopPlayback();
+  }
+
+  // ----- speech bubble -----
+
+  function showBubble(message) {
+    bubble = message;
+    if (onboardToastId != null) {
+      dismissToast(onboardToastId);
+      onboardToastId = null;
+    }
+    scheduleBubbleHide(Math.max(settings.bubbleSeconds, 5) + 2);
+  }
+
+  function scheduleBubbleHide(seconds) {
+    clearTimeout(bubbleTimer);
+    bubbleTimer = window.setTimeout(() => {
+      bubble = null;
+    }, Math.max(1500, seconds * 1000));
+  }
+
+  function closeBubble() {
+    bubble = null;
+    clearTimeout(bubbleTimer);
+  }
+
+  // ----- emotions / expressions -----
+
+  function setEmotion(id, { holdMs = 14000 } = {}) {
+    emotion = id || 'neutral';
+    clearTimeout(emotionTimer);
+    if (holdMs > 0) {
+      emotionTimer = window.setTimeout(() => {
+        if (!manualLook) emotion = 'neutral';
+      }, holdMs);
+    }
+  }
+
+  function selectLook(id) {
+    manualLook = id;
+    if (id === null) {
+      settings.autoEmotion = true;
+      toast('表情已恢复跟随情绪', 'info', 2200);
     } else {
-      showChat = mouseInWindow && !showDragBar;
+      toast(`表情：${shelfLabel(id, modelInfo?.expressions || [])}`, 'success', 2200);
     }
-    updateMouseThrough();
+  }
 
-    if (showChat && inputEl) {
-      tick().then(() => inputEl?.focus());
+  function toggleExpressions() {
+    exprOpen = !exprOpen;
+    if (exprOpen) {
+      menu = null;
+    }
+  }
+
+  function handlePoke() {
+    let line = POKE_LINES[Math.floor(Math.random() * POKE_LINES.length)];
+    if (line === lastPokeLine) line = POKE_LINES[(POKE_LINES.indexOf(line) + 1) % POKE_LINES.length];
+    lastPokeLine = line;
+    const info = getEmotion('embarrassed');
+    bubble = {
+      id: `poke-${Date.now()}`,
+      at: Date.now(),
+      role: 'pet',
+      text: line,
+      emotion: 'embarrassed',
+      emotionInfo: info,
+    };
+    if (onboardToastId != null) {
+      dismissToast(onboardToastId);
+      onboardToastId = null;
+    }
+    scheduleBubbleHide(Math.max(4, settings.bubbleSeconds - 3));
+    if (!manualLook && settings.autoEmotion) setEmotion('embarrassed', { holdMs: 4200 });
+  }
+
+  // ----- audio -----
+
+  function resolveAudioUrl(url) {
+    const value = String(url || '').trim();
+    if (!value) return '';
+    if (/^https?:\/\//i.test(value) || value.startsWith('data:')) return value;
+    return `${BACKEND_HTTP}${value.startsWith('/') ? '' : '/'}${value}`;
+  }
+
+  function estimateSpeechMs(text) {
+    const length = String(text || '').length;
+    return Math.min(12000, Math.max(1800, length * 105 + 700));
+  }
+
+  async function unlockAudio() {
+    if (audioUnlocked) return;
+    const ok = await audio.unlock();
+    if (ok) audioUnlocked = true;
+  }
+
+  function playReply(message) {
+    const token = ++playbackToken;
+    clearTimeout(pseudoTimer);
+    audioPlaying = true;
+    const estimate = estimateSpeechMs(message.text);
+    if (message.audioUrl && !settings.muted) {
+      audio.play(message.audioUrl, {
+        onEnd: () => {
+          if (token === playbackToken) finishPlayback();
+        },
+        onError: () => {
+          if (token !== playbackToken) return;
+          if (!audioWarned) {
+            audioWarned = true;
+            toast('语音播放失败，已切换为静音说话', 'warning');
+          }
+          startFallbackSpeech(estimate);
+        },
+      });
+      // Watchdog: a stalled <audio> must never leave the pet "speaking" forever.
+      clearTimeout(pseudoTimer);
+      pseudoTimer = window.setTimeout(() => {
+        if (token === playbackToken && audioPlaying) finishPlayback();
+      }, Math.max(16000, estimate * 2 + 4000));
+    } else {
+      startFallbackSpeech(estimate);
+    }
+  }
+
+  function startFallbackSpeech(ms) {
+    audio.stop({ silent: true });
+    audio.startPseudo(ms);
+    clearTimeout(pseudoTimer);
+    pseudoTimer = window.setTimeout(() => finishPlayback(), ms);
+  }
+
+  function finishPlayback() {
+    audioPlaying = false;
+    clearTimeout(pseudoTimer);
+    audio.stop({ silent: true });
+    if (bubble && !drawerOpen && !settingsOpen) {
+      scheduleBubbleHide(Math.max(4, settings.bubbleSeconds));
+    }
+  }
+
+  function stopPlayback() {
+    playbackToken += 1;
+    clearTimeout(pseudoTimer);
+    audioPlaying = false;
+    audio.stop({ silent: true });
+  }
+
+  // ----- settings / window -----
+
+  function toggleDnd() {
+    settings.dnd = !settings.dnd;
+    toast(settings.dnd ? '已开启免打扰' : '已关闭免打扰', 'info', 2400);
+  }
+
+  async function quit() {
+    if (isTauri) {
+      await closeWindow();
+    } else {
+      toast('网页预览不能关闭桌面窗口', 'info');
+    }
+  }
+
+  function reconnect() {
+    socket.reconnectNow();
+    toast('正在重新连接后端…', 'info', 2400);
+  }
+
+  function openSettings() {
+    settingsOpen = true;
+    menu = null;
+    bubble = null;
+    clearTimeout(bubbleTimer);
+  }
+
+  function closeSettings() {
+    settingsOpen = false;
+  }
+
+  function openContext(position) {
+    exprOpen = false;
+    menu = { x: position?.x ?? 120, y: position?.y ?? 120 };
+  }
+
+  function closeMenu() {
+    menu = null;
+  }
+
+  function handleWheel(event) {
+    if (event.ctrlKey || !stage || stageStatus !== 'ready') return;
+    if (drawerOpen || settingsOpen || menu || exprOpen) return;
+    if (event.target instanceof Element && event.target.closest('[data-hit]')) return;
+    if (!stage.hitTest(event.clientX, event.clientY)) return;
+    event.preventDefault();
+    const step = Math.max(-0.05, Math.min(0.05, -event.deltaY * 0.0009));
+    settings.zoom = Math.max(0.6, Math.min(1.8, settings.zoom + step));
+  }
+
+  function handleKeydown(event) {
+    const meta = event.ctrlKey || event.metaKey;
+    if (meta && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      openChat();
+      return;
+    }
+    if (meta && event.key === ',') {
+      event.preventDefault();
+      openSettings();
+      return;
+    }
+    // Ignore keydown while an IME is composing, otherwise cancelling a pinyin
+    // candidate would also close the top-most panel.
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Escape') {
+      if (menu) {
+        closeMenu();
+      } else if (settingsOpen) {
+        closeSettings();
+      } else if (exprOpen) {
+        exprOpen = false;
+      } else if (drawerOpen) {
+        closeChat();
+      } else if (bubble) {
+        closeBubble();
+      }
+    }
+  }
+
+  // ----- click-through / hit testing -----
+
+  function isOverUi(x, y) {
+    const nodes = document.querySelectorAll('[data-hit]');
+    for (const node of nodes) {
+      if (!(node instanceof HTMLElement)) continue;
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') {
+        continue;
+      }
+      if (Number(style.opacity) === 0) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) continue;
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return true;
+    }
+    return false;
+  }
+
+  async function applyIgnore(next) {
+    if (ignoreCursor === next) return;
+    // Only trust the local mirror after the window call succeeded; on failure
+    // reset to `null` (unknown) so the next tick retries instead of wedging.
+    const ok = await setIgnoreCursorEvents(next);
+    ignoreCursor = ok ? next : null;
+  }
+
+  function startInteractionLoop() {
+    if (!isTauri || interactionTimer) return;
+    interactionTimer = window.setInterval(checkPointer, 75);
+  }
+
+  async function checkPointer() {
+    if (!isTauri || !windowReady || checkingPointer || destroyed) return;
+    checkingPointer = true;
+    try {
+      if (!settings.autoClickThrough || settingsOpen || menu || drawerOpen) {
+        lastHitAt = performance.now();
+        await applyIgnore(false);
+        return;
+      }
+      const position = await cursorLocalPosition();
+      if (!position) {
+        await applyIgnore(false);
+        return;
+      }
+      const inside =
+        position.x >= 0 &&
+        position.y >= 0 &&
+        position.x <= window.innerWidth &&
+        position.y <= window.innerHeight;
+      if (!inside) {
+        await applyIgnore(true);
+        return;
+      }
+      const overUi = isOverUi(position.x, position.y);
+      const overModel =
+        !overUi && stageStatus === 'ready' && stage?.hitTest(position.x, position.y, 6);
+      if (overUi || overModel) {
+        lastHitAt = performance.now();
+        await applyIgnore(false);
+      } else if (performance.now() - lastHitAt > 280) {
+        await applyIgnore(true);
+      }
+    } catch (err) {
+      console.info('[interaction] pointer check failed', err);
+      await applyIgnore(false);
+    } finally {
+      checkingPointer = false;
+    }
+  }
+
+  // ----- stage callbacks -----
+
+  function handleStageReady(info) {
+    stageStatus = 'ready';
+    modelInfo = info;
+    if (manualLook?.startsWith('custom:')) {
+      const id = manualLook.slice(7);
+      if (!info.expressions?.some((expr) => expr.id === id)) manualLook = null;
+    }
+    const onboarded = (() => {
+      try {
+        return localStorage.getItem(ONBOARD_KEY) === '1';
+      } catch {
+        return true;
+      }
+    })();
+    if (!onboarded) {
+      try {
+        localStorage.setItem(ONBOARD_KEY, '1');
+      } catch {
+        /* ignore */
+      }
+      clearTimeout(onboardTimer);
+      onboardTimer = window.setTimeout(() => {
+        if (bubble) return;
+        onboardToastId = toast('左键戳一下 · 双击聊天 · 右键菜单', 'info', 6200);
+      }, 700);
+    }
+  }
+
+  function handleStageError(err) {
+    stageStatus = 'error';
+    toast(err?.message || '模型加载失败', 'error', 5200);
+  }
+
+  function handleStageRestored() {
+    stageStatus = 'ready';
+    toast('渲染已恢复', 'success', 2600);
+  }
+
+  function getMouthLevel() {
+    return audio.getLevel();
+  }
+
+  // ----- reactive glue -----
+
+  $effect(() => {
+    // Apply the current look whenever emotion / manual choice / readiness changes.
+    if (stageStatus !== 'ready' || !stage) return;
+    if (manualLook) {
+      stage.applyLook(shelfIdToLook(manualLook), { immediate: false });
+    } else if (settings.autoEmotion) {
+      stage.applyLook(emotionToLook(emotion), { immediate: false });
+    } else {
+      stage.applyLook({ params: {}, custom: {} });
     }
   });
 
   $effect(() => {
-    updateMouseThrough();
+    audio.setVolume(settings.volume);
+    audio.setMuted(settings.muted);
   });
 
-  // ===== WebSocket =====
-  function connectWebSocket() {
-    if (ws) {
-      ws.onclose = null;
-      ws.close();
-      ws = null;
+  $effect(() => {
+    if (!windowReady || !isTauri) return;
+    setAlwaysOnTop(settings.alwaysOnTop);
+  });
+
+  $effect(() => {
+    // Keep the backend's DND flag aligned with the UI on every (re)connect.
+    const enabled = settings.dnd;
+    if (socket.phase === 'open') socket.setDnd(enabled);
+  });
+
+  $effect(() => {
+    // Keep the backend's TTS switch aligned (off by default until enabled).
+    const enabled = settings.tts;
+    if (socket.phase === 'open') socket.setTts(enabled);
+  });
+
+  $effect(() => {
+    if (drawerOpen) {
+      unread = 0;
+      bubble = null;
+      clearTimeout(bubbleTimer);
     }
+  });
 
-    try {
-      ws = new WebSocket(BACKEND_WS);
-      ws.onopen = () => {
-        console.log('✅ WebSocket 已连接');
-        wsConnected = true;
-        if (reconnectTimer) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = null;
-        }
-      };
-      ws.onmessage = (event) => {
-        try {
-          handleWebSocketMessage(JSON.parse(event.data));
-        } catch (e) {
-          console.error('解析消息失败:', e);
-        }
-      };
-      ws.onerror = () => { wsConnected = false; };
-      ws.onclose = () => {
-        wsConnected = false;
-        ws = null;
-        reconnectTimer = setTimeout(connectWebSocket, 5000);
-      };
-    } catch (e) {
-      console.error('创建 WebSocket 失败:', e);
-      reconnectTimer = setTimeout(connectWebSocket, 5000);
+  $effect(() => {
+    if (settingsOpen) {
+      bubble = null;
+      clearTimeout(bubbleTimer);
     }
-  }
+  });
 
-  function handleWebSocketMessage(data) {
-    if (data.type === 'audio_chunk') {
-      const text = data.payload?.text || '';
-      const emotion = data.payload?.expression || 'neutral';
-      messages = [...messages, { from: 'pet', text, emotion }].slice(-100);
-      requestEmotion(emotion);
-
-      const audioUrl = data.payload?.audio_url;
-      if (audioUrl) {
-        playAudio(`${BACKEND_HTTP}${audioUrl}`);
-      } else {
-        console.warn('⚠️ 收到 audio_chunk 但没有音频，降级为文字');
-      }
-    } else if (data.type === 'system_message') {
-      messages = [...messages, { from: 'system', text: data.payload?.text || '' }].slice(-100);
+  $effect(() => {
+    if (!isTauri || !windowReady) return;
+    if (!settings.autoClickThrough || settingsOpen || menu || drawerOpen) {
+      applyIgnore(false);
     }
-  }
-
-  function playAudio(src) {
-    if (window.currentAudio) {
-      window.currentAudio.pause();
-      window.currentAudio.src = '';
-      window.currentAudio.load();
-      window.currentAudio = null;
-    }
-    const audio = new Audio(src);
-    window.currentAudio = audio;
-    audio.onerror = () => console.error('❌ 音频加载失败:', src);
-    audio.play().catch((err) => {
-      console.warn('⛔ 播放被拦截:', err);
-    });
-  }
-
-  // ===== 交互 =====
-  function sendMessage() {
-    const text = inputText.trim();
-    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
-    messages = [...messages, { from: 'user', text }].slice(-100);
-    ws.send(JSON.stringify({ type: 'text_input', payload: { text } }));
-    inputText = '';
-    inputEl?.focus();
-  }
-
-  function handleKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  }
-
-  function lockChat() {
-    chatLocked = true;
-    updateMouseThrough();
-    if (lockReleaseTimer) clearTimeout(lockReleaseTimer);
-    tick().then(() => inputEl?.focus());
-  }
-
-  function unlockChat() {
-    chatLocked = false;
-    inputFocused = false;
-    showChat = false;
-    if (lockReleaseTimer) clearTimeout(lockReleaseTimer);
-    updateMouseThrough();
-  }
-
-  function handleWheel(e) {
-    if (e.target.closest('#chat-overlay')) return;
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? -0.1 : 0.1;
-    scale = Math.max(0.3, Math.min(3.0, scale + delta));
-    if (renderer) {
-      renderer._scale = scale;
-      renderer.applyTransform?.(scale, 0, 0, 0);
-    }
-  }
-
-  let resizeTimer;
-  function handleResize() {
-    if (!renderer) return;
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      renderer.resize(window.innerWidth * dpr, window.innerHeight * dpr);
-      renderer.applyTransform?.(scale, 0, 0, 0);
-    }, 150);
-  }
-
-  function onTriggerEnter() { showDragBar = true; }
-  function onTriggerLeave() { showDragBar = false; }
+  });
 </script>
 
-<svelte:window onresize={handleResize} onwheel={handleWheel} />
+<svelte:window onkeydown={handleKeydown} onpointerdown={unlockAudio} />
 
-<!-- 顶部拖拽区 -->
-<div id="top-trigger" role="presentation" onmouseenter={onTriggerEnter} onmouseleave={onTriggerLeave}>
-  {#if showDragBar}
-    <div id="drag-bar" data-tauri-drag-region></div>
+<div
+  id="pet-app"
+  class:browser={!isTauri}
+  class:reduce-motion={settings.reduceMotion}
+  class:dnd={settings.dnd}
+  aria-label={`${PET_NAME} 桌面伴侣`}
+>
+  <div class="scene" inert={settingsOpen || !!menu}>
+    <Ambient glow={settings.ambientGlow} sparkles={settings.showSparkles} />
+
+    <CharacterStage
+    bind:this={stage}
+    quality={settings.quality}
+    zoom={settings.zoom}
+    offsetX={settings.offsetX}
+    offsetY={settings.offsetY}
+    opacity={settings.opacity}
+    breath={settings.breath && !settings.reduceMotion}
+    blink={settings.blink}
+    sway={!settings.reduceMotion}
+    mouseTracking={settings.mouseTracking}
+    lipSync={settings.lipSync}
+    interactive={!settingsOpen && !menu}
+    getMouthLevel={getMouthLevel}
+    onready={handleStageReady}
+    onerror={handleStageError}
+    onrestored={handleStageRestored}
+    onpoke={handlePoke}
+    onopenchat={openChat}
+    oncontext={openContext}
+  />
+
+  <TopChrome phase={socket.phase} tauri={isTauri} onclose={quit} />
+
+  {#if bubbleVisible}
+    <SpeechBubble
+      message={bubble}
+      onclose={closeBubble}
+      onreplay={replayMessage}
+      onopenchat={openChat}
+    />
   {/if}
+
+  {#if drawerOpen}
+    <ChatDrawer
+      name={PET_NAME}
+      {messages}
+      status={uiStatus}
+      phase={socket.phase}
+      latency={socket.latency}
+      retryIn={socket.retryIn}
+      {focusToken}
+      {exprOpen}
+      exprOptions={exprOptions}
+      activeLook={activeLook}
+      onclose={closeChat}
+      onclear={clearMessages}
+      onsend={sendText}
+      onstop={stopCurrent}
+      onreplay={replayMessage}
+      onvoice={sendVoice}
+      onprompt={sendText}
+      onreconnect={reconnect}
+      onselectlook={selectLook}
+      ontoggleexpressions={toggleExpressions}
+    />
+  {/if}
+
+  {#if exprOpen && !drawerOpen}
+    <ExpressionShelf
+      options={exprOptions}
+      activeId={activeLook}
+      onselect={selectLook}
+      onclose={() => (exprOpen = false)}
+    />
+  {/if}
+
+    <Dock
+      name={PET_NAME}
+      phase={socket.phase}
+      brain={socket.brain}
+      {speaking}
+      {unread}
+      dnd={settings.dnd}
+      {drawerOpen}
+      {exprOpen}
+      onchat={openChat}
+      onexpressions={toggleExpressions}
+      ondnd={toggleDnd}
+      onsettings={openSettings}
+    />
+  </div>
+
+  {#if settingsOpen}
+    <SettingsSheet
+      {modelInfo}
+      phase={socket.phase}
+      latency={socket.latency}
+      retryIn={socket.retryIn}
+      onclose={closeSettings}
+      onreconnect={reconnect}
+    />
+  {/if}
+
+  {#if menu}
+    <ContextMenu
+      x={menu.x}
+      y={menu.y}
+      dnd={settings.dnd}
+      phase={socket.phase}
+      tauri={isTauri}
+      onclose={closeMenu}
+      onchat={openChat}
+      onexpressions={() => {
+        menu = null;
+        exprOpen = true;
+      }}
+      ondnd={toggleDnd}
+      onsettings={openSettings}
+      onreconnect={reconnect}
+      onquit={quit}
+    />
+  {/if}
+
+  <ToastHost />
 </div>
 
-<!-- Live2D 画布 -->
-<div id="canvasContainer" bind:this={canvasContainer}></div>
-
-<!-- 对话框 -->
-{#if showChat}
-  <div id="chat-overlay" role="button" tabindex="0" onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') lockChat() }} onclick={lockChat}>
-    <div id="message-list">
-      {#each messages as msg, i (i)}
-        <div class="bubble {msg.from}">
-          {msg.text}
-          {#if msg.emotion}<span class="emotion-tag"> [{msg.emotion}]</span>{/if}
-        </div>
-      {/each}
-    </div>
-    <div id="input-area">
-      <input
-        bind:this={inputEl}
-        bind:value={inputText}
-        onkeydown={handleKeyDown}
-        onfocus={() => {
-          inputFocused = true;
-          unlockWebViewAudio();
-          if (leaveTimer) {
-            clearTimeout(leaveTimer);
-            leaveTimer = null;
-          }
-        }}
-        onclick={() => unlockAudioAutoplay()}
-        onblur={() => inputFocused = false}
-        placeholder="说点什么..."
-        disabled={!wsConnected}
-      />
-      <button onclick={sendMessage} disabled={!wsConnected}>发送</button>
-      <button onclick={unlockChat} class="close-btn">✕</button>
-    </div>
-    <div id="connection-status" class:connected={wsConnected}>
-      {wsConnected ? '🟢 已连接' : '🔴 未连接'}
-    </div>
-  </div>
-{/if}
-
 <style>
-  #top-trigger {
-    position: fixed; top: 0; left: 0;
-    width: 100%; height: 30px;
-    z-index: 150; pointer-events: auto;
-  }
-  #drag-bar {
-    width: 100%; height: 100%;
-    -webkit-app-region: drag;
-    background: rgba(255, 255, 255, 0.15);
-    backdrop-filter: blur(4px);
-    cursor: move;
-  }
-  #canvasContainer {
-    position: fixed; top: 0; left: 0;
-    width: 100%; height: 100%;
-    z-index: 0; pointer-events: none;
-  }
-  #canvasContainer :global(canvas) {
-    width: 100% !important; height: 100% !important;
-    border: none !important; outline: none !important;
-    box-shadow: none !important; margin: 0 !important; padding: 0 !important;
-  }
-  :global(body) {
-    margin: 0; padding: 0;
-    background: transparent !important;
+  #pet-app {
+    position: fixed;
+    inset: 0;
     overflow: hidden;
     user-select: none;
-    pointer-events: auto;
+    isolation: isolate;
+    color: var(--text-1);
+    font-family: var(--font-ui);
+    --dock-bottom: 14px;
   }
-  #chat-overlay {
-    position: fixed; bottom: 20px; left: 50%;
-    transform: translateX(-50%);
-    width: 80%; max-height: 50%;
-    display: flex; flex-direction: column; align-items: center;
-    z-index: 200; font-family: system-ui, -apple-system, sans-serif;
-    pointer-events: auto;
-    background: rgba(0, 0, 0, 0.35); backdrop-filter: blur(10px);
-    border-radius: 16px; padding: 12px 16px;
+  .scene {
+    position: absolute;
+    inset: 0;
   }
-  #message-list {
-    width: 100%; overflow-y: auto;
-    display: flex; flex-direction: column; gap: 6px;
-    max-height: 200px; padding: 4px 0;
+  #pet-app.browser::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    background:
+      radial-gradient(ellipse 70% 55% at 50% 22%, rgba(93, 123, 184, 0.26), transparent 62%),
+      radial-gradient(ellipse 60% 40% at 16% 88%, rgba(83, 107, 166, 0.16), transparent 60%),
+      radial-gradient(ellipse 55% 40% at 88% 78%, rgba(99, 79, 130, 0.14), transparent 62%),
+      linear-gradient(165deg, #0a0d15 0%, #070a11 55%, #05070c 100%);
   }
-  .bubble {
-    padding: 6px 12px; border-radius: 12px; max-width: 70%;
-    word-wrap: break-word; background: rgba(0,0,0,0.5);
-    color: white; backdrop-filter: blur(4px); font-size: 14px;
+  #pet-app.browser::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image: radial-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+    background-size: 22px 22px;
+    -webkit-mask-image: radial-gradient(ellipse at center, #000 0%, transparent 76%);
+    mask-image: radial-gradient(ellipse at center, #000 0%, transparent 76%);
   }
-  .bubble.user { align-self: flex-end; background: #4a9eff; }
-  .bubble.pet { align-self: flex-start; }
-  .bubble.system { align-self: center; opacity: 0.8; font-size: 12px; }
-  .emotion-tag { font-size: 10px; opacity: 0.7; margin-left: 4px; }
-  #input-area { display: flex; gap: 8px; margin-top: 8px; width: 100%; max-width: 400px; }
-  #input-area input {
-    flex: 1; padding: 6px 12px; border-radius: 20px; border: none;
-    background: rgba(255,255,255,0.15); color: white; outline: none; font-size: 14px;
-    backdrop-filter: blur(4px);
+  #pet-app.dnd::before {
+    filter: saturate(0.72) brightness(0.9);
   }
-  #input-area input::placeholder { color: rgba(255,255,255,0.6); }
-  #input-area input:disabled { opacity: 0.5; cursor: not-allowed; }
-  #input-area button {
-    padding: 6px 16px; border-radius: 20px; border: none;
-    background: #4a9eff; color: white; cursor: pointer; font-size: 14px; transition: background 0.2s;
-  }
-  #input-area button:hover:not(:disabled) { background: #6ab0ff; }
-  #input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .close-btn { background: rgba(255,255,255,0.2); font-size: 16px; line-height: 1; }
-  .close-btn:hover { background: rgba(255,255,255,0.35); }
-  #connection-status {
-    margin-top: 6px; font-size: 12px; color: rgba(255,255,255,0.6);
-    background: rgba(0,0,0,0.3); padding: 2px 10px; border-radius: 12px; backdrop-filter: blur(2px);
-  }
-  #connection-status.connected { color: #8f8; }
 </style>

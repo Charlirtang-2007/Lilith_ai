@@ -11,11 +11,25 @@
 | pixi-live2d-display（`index.min.js`，打包名 `PIXI.live2d`） | `frontend/app/static/lib/` | MIT |
 | PIXI.js（`pixi.min.js`） | `frontend/app/static/lib/` | MIT |
 
-> 说明：项目早期使用 Spine Runtime，该运行时为 Esoteric Software 专有授权，**已在本次重构中完全移除**。
+> 说明：项目早期使用 Spine Runtime，该运行时为 Esoteric Software 专有授权，**已在重构中完全移除**。
+> 前端 UI 的图标为本项目手写 SVG，不依赖第三方图标包或字体。
 
-## 2. Live2D 模型（`frontend/app/static/live2d/character/`）
+## 2. Live2D 模型（`frontend/app/static/live2d/<模型名>/`）
 
-请只放入满足以下条件的模型：
+### 当前仓库使用的模型
+
+| 项目 | 内容 |
+| :--- | :--- |
+| 目录 | `frontend/app/static/live2d/lilith_love/` |
+| 主文件 | `lilith_love.model3.json`（Cubism 3，VTube Studio 导出） |
+| 能力 | 参数 + 物理 + 呼吸/眨眼；**无 Motions**；磁盘上有 8 个 `.exp3.json`，前端运行时加载，不修改 model3.json |
+| 作者 / 来源 | **待补充** |
+| 授权 | **待确认** |
+| 是否提交 | ❌ 不入库（`.gitignore` 已排除 `static/live2d/*/`） |
+
+> 对外发布或参赛前：先确认作者授权范围；确认不了就换成官方免费样例或原创模型。
+
+### 放入其它模型的条件
 
 - [ ] 作者授权 **允许二次分发 / 在开源项目中再发布**（例如 Live2D 官方免费样例、CC0、明确声明可商用或可再分发的原创模型）
 - [ ] 记录：模型名 / 作者 / 来源链接 / 授权类型
@@ -29,8 +43,8 @@
 | 自己用 Cubism Editor 制作 | 最稳妥：完全原创，授权写"本项目原创" |
 | 游戏角色提取模型（如各类二次元手游） | ⚠️ **不建议**。属于游戏公司的美术资产，即使非盈利也通常超出"个人使用"范围，且与 Live2D 引擎条款叠加后风险更高 |
 
-把模型放进 `static/live2d/character/` 后，目录名即模型名：
-例如 `static/live2d/character/character.model3.json` → 默认即可加载。
+把模型放进 `static/live2d/<名字>/` 后，目录名即模型名：
+例如 `static/live2d/lilith_love/lilith_love.model3.json` → 设 `VITE_LIVE2D_MODEL_DIR=live2d/lilith_love` 即可加载。
 
 ## 3. 语音
 

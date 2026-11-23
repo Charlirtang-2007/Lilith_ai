@@ -33,6 +33,8 @@ class Config:
     # ===== 本地 TTS 微服务 =====
     TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "http://127.0.0.1:9880")
     TTS_TIMEOUT = float(os.getenv("TTS_TIMEOUT", "60"))
+    # 是否启用本地 TTS；默认关（用户可在桌宠设置里打开，前端会随连接同步给后端）
+    TTS_ENABLED = os.getenv("TTS_ENABLED", "false").lower() == "true"
 
     # ===== 角色卡 =====
     PERSONA_PATH = Path(
@@ -51,7 +53,7 @@ class Config:
 
     # ===== 服务 =====
     HOST = os.getenv("HOST", "127.0.0.1")
-    PORT = int(os.getenv("PORT", "8000"))
+    PORT = int(os.getenv("PORT", "8001"))
     PROXY = os.getenv("PROXY_URL")
 
 

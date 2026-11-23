@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一键启动：后端(8000) + 前端(1420) + 可选 TTS(9880)
+# 一键启动：后端(8001) + 前端(1420) + 可选 TTS(9880)
 # 用法：./tools/start.sh [--with-tts]
 set -euo pipefail
 
@@ -13,7 +13,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "🚀 启动后端 (http://127.0.0.1:8000)..."
+echo "🚀 启动后端 (http://127.0.0.1:8001)..."
 (
   cd "$ROOT/backend"
   [[ -d .venv ]] && source .venv/bin/activate

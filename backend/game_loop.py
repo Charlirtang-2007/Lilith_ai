@@ -7,13 +7,14 @@ from config import Config
 from services import AIService
 
 
-async def send_alarm_reply(alarm: dict, send_func) -> None:
-    """用 TTS 播报闹钟；TTS 失败时只发文字。"""
+async def send_alarm_reply(alarm: dict, send_func, tts_enabled: bool) -> None:
+    """用 TTS 播报闹钟；TTS 关闭或失败时只发文字。"""
     audio_url = ""
-    try:
-        audio_url = await AIService.text_to_speech(alarm["message"])
-    except Exception as e:
-        print(f"❌ 闹钟语音生成失败: {e}")
+    if tts_enabled:
+        try:
+            audio_url = await AIService.text_to_speech(alarm["message"])
+        except Exception as e:
+            print(f"❌ 闹钟语音生成失败: {e}")
     await send_func(
         "audio_chunk",
         {
@@ -49,7 +50,7 @@ async def game_loop(brain, send_func, on_proactive):
             triggered = brain.alarms.check(datetime.now())
             if triggered:
                 print(f"⏰ 触发 {len(triggered)} 个闹钟")
-                await asyncio.gather(*(send_alarm_reply(a, send_func) for a in triggered))
+                await asyncio.gather(*(send_alarm_reply(a, send_func, brain.tts_enabled) for a in triggered))
 
         # ===== 无聊检测 =====
         idle_for = now - brain.last_user_input_time

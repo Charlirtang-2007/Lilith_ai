@@ -83,9 +83,8 @@ frontend/app/package-lock.json
 frontend/app/pnpm-lock.yaml
 frontend/app/*.log
 
-# Live2D 模型：授权明确可再分发的才提交，其余放本地
+# Live2D 模型：授权明确允许再分发的才提交，其余只留在本地
 frontend/app/static/live2d/*/
-!frontend/app/static/live2d/character/
 
 # ===================================================
 #  TTS (tts/)
@@ -170,3 +169,13 @@ Thumbs.db
 *.tar.gz
 *.tgz
 *.tar
+# 本地联调用的 cargo 缓存 / 构建产物
+.dev-build/
+
+# ===================================================
+#  本地临时产物（视觉验证 / 截图 / 浏览器下载）
+# ===================================================
+.tmp/
+
+# HuggingFace 下载缓存（embedding 模型本体在 backend/models/，已单独忽略）
+backend/.hf-cache/

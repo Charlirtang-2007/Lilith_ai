@@ -1,49 +1,46 @@
 /**
- * 前端运行时配置（可用环境变量覆盖）
- * 默认值对应本地开发：后端跑在 127.0.0.1:8000
+ * Runtime configuration.
+ *
+ * Everything here can be overridden from `frontend/app/.env` (Vite only
+ * exposes variables prefixed with VITE_).
  */
 
-const env = import.meta.env;
+const env = /** @type {Record<string, any>} */ (import.meta.env || {});
 
-/** 后端 HTTP 地址，例如 http://127.0.0.1:8000 */
-export const BACKEND_HTTP = env.VITE_BACKEND_HTTP || 'http://127.0.0.1:8000';
+/** Where the FastAPI brain lives. */
+export const BACKEND_HTTP = (env.VITE_BACKEND_HTTP || 'http://127.0.0.1:8001').replace(/\/$/, '');
+export const BACKEND_WS = env.VITE_BACKEND_WS || `${BACKEND_HTTP.replace(/^http/, 'ws')}/ws`;
 
-/** 后端 WebSocket 地址 */
-export const BACKEND_WS =
-  env.VITE_BACKEND_WS || BACKEND_HTTP.replace(/^http/, 'ws') + '/ws';
+/** Model folder relative to `static/`. The file name defaults to the folder name. */
+export const MODEL_DIR = (env.VITE_LIVE2D_MODEL_DIR || 'live2d/lilith_love').replace(/^\/+|\/+$/g, '');
+export const MODEL_NAME = env.VITE_LIVE2D_MODEL_NAME || MODEL_DIR.split('/').pop();
+export const MODEL_FILE = env.VITE_LIVE2D_MODEL_FILE || `${MODEL_NAME}.model3.json`;
 
-/** Live2D 模型目录（相对 static/），目录内放同名 *.model3.json */
-export const LIVE2D_MODEL_DIR = env.VITE_LIVE2D_MODEL_DIR || 'live2d/character'; // 目录名即模型名
+/** Public model URL. BASE_URL keeps this working if SvelteKit is ever served under a sub-path. */
+const base = env.BASE_URL || '/';
+function joinUrl(root, path) {
+  const left = String(root || '').replace(/\/+$/, '');
+  const right = String(path || '').replace(/^\/+/, '');
+  return left ? `${left}/${right}` : `/${right}`;
+}
+const encodedDir = MODEL_DIR.split('/').map((part) => encodeURIComponent(part)).join('/');
+export const MODEL_BASE_URL = `${joinUrl(base, encodedDir)}/`;
 
-/** 整体缩放倍率（相对于自适应铺满） */
-export const MODEL_SCALE = Number(env.VITE_MODEL_SCALE || 1);
+export const PET_NAME = env.VITE_PET_NAME || 'Lilith';
+export const PET_TITLE = env.VITE_PET_TITLE || '女仆 · 桌面伴侣';
+export const APP_VERSION = '0.3.0';
 
-/** 自动待机切换间隔（毫秒） */
-export const IDLE_SWITCH_MS = Number(env.VITE_IDLE_SWITCH_MS || 300000);
+/** Logical window size; mirrored in tauri.conf.json. */
+export const WINDOW_WIDTH = 300;
+export const WINDOW_HEIGHT = 520;
 
-/**
- * 情绪 -> Live2D 动作 映射
- * 值为动作名，取 *.model3.json 里 Motions 的某个组名（例如 "Happy" 或 "Happy,0"）。
- * 留空或找不到时回退到 idle。
- */
-export const EMOTION_MOTIONS = {
-  smile: ['Happy', 'Smile'],
-  angry: ['Angry'],
-  sad: ['Sad'],
-  surprise: ['Surprised', 'Shock'],
-  embarrassed: ['Shy', 'Embarrassed'],
-  calm: ['Calm'],
-  daze: ['Idle'],
-  fear: ['Fear'],
-  sleepy: ['Sleepy'],
-  sleep: ['Sleep'],
-  wronged: ['Sad'],
-  neutral: ['Idle'],
-};
+export const STORAGE_PREFIX = 'lilith.v3.';
 
-/** 情绪 -> Live2D 表情 映射（取 Expressions 的名字），没有就留空 */
-export const EMOTION_EXPRESSIONS = {
-  smile: 'happy',
-  angry: 'angry',
-  sad: 'sad',
+/** Browser (non-Tauri) previews get a quiet night backdrop so the model reads well. */
+export const DEV = !!env.DEV;
+
+export const SHORTCUTS = {
+  chat: 'Ctrl K',
+  settings: 'Ctrl ,',
+  close: 'Esc',
 };

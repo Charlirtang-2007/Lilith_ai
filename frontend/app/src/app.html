@@ -2,7 +2,26 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#070a11" />
+    <title>Lilith · 桌面伴侣</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+    </style>
+    <!-- Live2D 依赖：index.min.js 在加载时就会检查 Cubism 2/4 是否存在，所以两个 runtime 必须排在它前面 -->
+    <script src="/lib/pixi.min.js"></script>
+    <script src="/lib/live2d.min.js"></script>
+    <script src="/lib/live2dcubismcore.min.js"></script>
+    <script src="/lib/index.min.js"></script>
     %sveltekit.head%
   </head>
   <body>

@@ -1,6 +1,7 @@
 """桌面宠物后端：WebSocket 对话、情绪状态、闹钟与主动发言。"""
 import asyncio
 import json
+import re
 import shutil
 import time
 from datetime import datetime
@@ -11,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from alarms import AlarmStore
-from config import Config, audio_dir
+from config import BACKEND_DIR, Config, audio_dir
 from game_loop import game_loop
 from memory import MemorySystem
 from services import AIService
@@ -118,6 +119,7 @@ class PetBrain:
         self.current_threshold = self.boredom_threshold
         self.max_threshold = Config.BOREDOM_MAX
         self.is_dnd_mode = False
+        self.tts_enabled = Config.TTS_ENABLED
         self.memory = MemorySystem()
         self.history: list[dict] = []
         self.current_emotion = "neutral"
@@ -181,6 +183,21 @@ class PetBrain:
                 await send_func("system_message", {"text": "⚠️ 闹钟时间格式无法识别，请重新设置"})
 
 
+class Hub:
+    """记录所有已连接的桌宠窗口，供主动发言 / 调试推送使用。"""
+
+    def __init__(self):
+        self.clients: list = []
+
+    async def broadcast(self, type_str: str, payload: dict):
+        for ws in list(self.clients):
+            try:
+                await ws.send_json({"type": type_str, "payload": payload})
+            except Exception:
+                pass
+
+
+HUB = Hub()
 brain = PetBrain()
 
 app = FastAPI()
@@ -193,6 +210,144 @@ app.add_middleware(
 )
 
 
+# ==================== 后端配置读写（设置面板）====================
+
+ENV_FILE = BACKEND_DIR / ".env"
+
+# API 字段名 -> (写入 .env 的变量名, 类型)
+# 类型：text=字符串 / int=整数 / bool=布尔 / key=密钥（前端脱敏显示）
+# 注意：SILICON_KEY 是 Config 属性名，对应 .env 里的 SILICON_API_KEY。
+EDITABLE_FIELDS = {
+    "LLM_MODEL": ("LLM_MODEL", "text"),
+    "LLM_BASE_URL": ("LLM_BASE_URL", "text"),
+    "PET_NAME": ("PET_NAME", "text"),
+    "TTS_SERVICE_URL": ("TTS_SERVICE_URL", "text"),
+    "EMBEDDING_MODEL_PATH": ("EMBEDDING_MODEL_PATH", "text"),
+    "STT_MODEL": ("STT_MODEL", "text"),
+    "BOREDOM_THRESHOLD": ("BOREDOM_THRESHOLD", "int"),
+    "BOREDOM_MAX": ("BOREDOM_MAX", "int"),
+    "ENABLE_VISION": ("ENABLE_VISION", "bool"),
+    "ALARM_ENABLED": ("ALARM_ENABLED", "bool"),
+    "LLM_API_KEY": ("LLM_API_KEY", "key"),
+    "SILICON_KEY": ("SILICON_API_KEY", "key"),
+}
+
+# 绝对禁止通过接口改写的字段（避免把服务监听改断）
+FORBIDDEN_FIELDS = {"HOST", "PORT"}
+
+
+def _mask_secret(value) -> str:
+    """仅保留前 3 字符 + 省略号；空值返回空串。"""
+    if not value:
+        return ""
+    text = str(value)
+    return f"{text[:3]}…"
+
+
+def _get_config_value(api_field: str):
+    """按 API 字段名读取 Config 属性（SILICON_KEY 特例）。"""
+    attr = "SILICON_KEY" if api_field == "SILICON_KEY" else api_field
+    return getattr(Config, attr, None)
+
+
+def _write_env(updates: list[tuple[str, str]]) -> None:
+    """把 (env 变量名, 新值) 写回 .env，逐行处理以保留原有注释与顺序。"""
+    lines = ENV_FILE.read_text(encoding="utf-8").splitlines() if ENV_FILE.exists() else []
+    updates_map = dict(updates)
+    matched: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        if m and m.group(1) in updates_map:
+            out.append(f"{m.group(1)}={updates_map[m.group(1)]}")
+            matched.add(m.group(1))
+        else:
+            out.append(line)
+    for env_name, value in updates:
+        if env_name not in matched:
+            out.append(f"{env_name}={value}")
+    text = "\n".join(out)
+    if out:
+        text += "\n"
+    ENV_FILE.write_text(text, encoding="utf-8")
+
+
+@app.get("/api/config")
+async def get_config():
+    """返回当前生效配置；密钥脱敏，不返回 HOST/PORT。"""
+    data = {}
+    for api_field, (_env_name, ftype) in EDITABLE_FIELDS.items():
+        value = _get_config_value(api_field)
+        if ftype == "key":
+            data[api_field] = _mask_secret(value)
+        elif ftype == "bool":
+            data[api_field] = bool(value)
+        else:
+            data[api_field] = "" if value is None else value
+    data["llm_key_set"] = bool(Config.LLM_API_KEY)
+    data["silicon_key_set"] = bool(Config.SILICON_KEY)
+    data["restart_required"] = True
+    return data
+
+
+@app.post("/api/config")
+async def set_config(payload: dict):
+    """接收 {field: value}，把非空且在白名单内的字段写回 .env。"""
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "请求体必须是 JSON 对象"}
+
+    updates: list[tuple[str, str]] = []
+    for api_field, value in payload.items():
+        if api_field in FORBIDDEN_FIELDS:
+            continue  # 拒绝修改服务监听地址/端口
+        if api_field not in EDITABLE_FIELDS:
+            continue
+        if value is None:
+            continue
+
+        env_name, ftype = EDITABLE_FIELDS[api_field]
+
+        if ftype == "key":
+            text = str(value).strip()
+            # 空串或脱敏掩码（含省略号）不覆盖原值，只有明文才写
+            if not text or "…" in text:
+                continue
+            new_value = text
+        elif ftype == "bool":
+            if isinstance(value, bool):
+                new_value = "true" if value else "false"
+            else:
+                low = str(value).strip().lower()
+                if low in ("true", "1", "yes", "on"):
+                    new_value = "true"
+                elif low in ("false", "0", "no", "off"):
+                    new_value = "false"
+                else:
+                    continue
+        elif ftype == "int":
+            try:
+                new_value = str(int(value))
+            except (TypeError, ValueError):
+                continue
+        else:
+            new_value = str(value).strip()
+            if not new_value:
+                continue
+
+        updates.append((env_name, new_value))
+
+    try:
+        _write_env(updates)
+    except Exception as e:
+        return {"ok": False, "error": f"写入 .env 失败：{e}"}
+
+    return {
+        "ok": True,
+        "updated": [env_name for env_name, _ in updates],
+        "restart_required": True,
+    }
+
+
 @app.get("/")
 async def root():
     return {"status": "ok", "pet": Config.PET_NAME}
@@ -201,6 +356,19 @@ async def root():
 @app.get("/ping")
 async def ping():
     return {"pong": True}
+
+
+@app.get("/api/dev/emit")
+async def dev_emit(text: str = "联调测试消息", emotion: str = "smile"):
+    """联调辅助：直接向所有已连接的桌宠窗口推送一条 audio_chunk（不需要 LLM）。
+
+    用法：curl "http://127.0.0.1:8001/api/dev/emit?text=hello&emotion=smile"
+    """
+    await HUB.broadcast(
+        "audio_chunk",
+        {"text": text, "audio_url": "", "expression": sanitize_emotion(emotion)},
+    )
+    return {"sent": True, "clients": len(HUB.clients)}
 
 
 @app.get("/api/current_emotion")
@@ -225,6 +393,8 @@ async def websocket_endpoint(websocket: WebSocket):
         await proactive_speak(send)
 
     loop_task = asyncio.create_task(game_loop(brain, send, on_proactive))
+    HUB.clients.append(websocket)
+    print(f"🖥️ 桌宠窗口已连接，当前连接数: {len(HUB.clients)}", flush=True)
 
     try:
         while True:
@@ -243,6 +413,9 @@ async def websocket_endpoint(websocket: WebSocket):
             elif ptype == "set_dnd_mode":
                 brain.is_dnd_mode = bool(payload.get("enabled"))
                 print(f"🔕 勿扰模式: {brain.is_dnd_mode}")
+            elif ptype == "set_tts_mode":
+                brain.tts_enabled = bool(payload.get("enabled"))
+                print(f"🗣️ 语音合成(TTS): {brain.tts_enabled}")
             elif ptype == "interrupt":
                 print("🛑 用户打断")
                 brain.state = "idle"
@@ -252,6 +425,9 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         print(f"❌ Main Loop Error: {e}")
     finally:
+        if websocket in HUB.clients:
+            HUB.clients.remove(websocket)
+            print(f"🖥️ 桌宠窗口断开，当前连接数: {len(HUB.clients)}", flush=True)
         loop_task.cancel()
         # 清理本次会话的临时音频
         try:
@@ -264,11 +440,13 @@ async def websocket_endpoint(websocket: WebSocket):
 async def send_reply(text: str, emotion: str, send_func):
     brain.current_emotion = emotion
     brain.state = "speaking"
-    try:
-        audio_url = await AIService.text_to_speech(text)
-    except Exception as e:
-        print(f"⚠️ TTS 失败，仅文字回复: {e}")
-        audio_url = ""
+    audio_url = ""
+    if brain.tts_enabled:
+        try:
+            audio_url = await AIService.text_to_speech(text)
+        except Exception as e:
+            print(f"⚠️ TTS 失败，仅文字回复: {e}")
+            audio_url = ""
     await send_func(
         "audio_chunk",
         {"text": text, "audio_url": audio_url or "", "expression": emotion},

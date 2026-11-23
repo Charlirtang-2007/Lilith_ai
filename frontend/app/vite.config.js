@@ -9,6 +9,16 @@ export default defineConfig(() => ({
   plugins: [sveltekit()],
 
   // Tauri 开发 / 构建专用
+  // 预构建 Tauri API，避免运行时首次加载触发页面整页重载
+  optimizeDeps: {
+    include: [
+      '@tauri-apps/api/window',
+      '@tauri-apps/api/webviewWindow',
+      '@tauri-apps/api/core',
+      '@tauri-apps/api/dpi',
+      '@tauri-apps/api/event',
+    ],
+  },
   clearScreen: false,
   server: {
     port: 1420,

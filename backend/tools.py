@@ -1,7 +1,13 @@
 import base64
 import io
-import pyautogui
 from PIL import Image
+
+
+def _screenshot():
+    """懒加载 pyautogui：无显示器（服务器 / 无 GUI 环境）时不应让整个服务起不来。"""
+    import pyautogui
+
+    return pyautogui.screenshot()
 
 class ToolBox:
     @staticmethod
@@ -9,7 +15,7 @@ class ToolBox:
         """截取屏幕，压缩并转为 Base64 (适配 Gemini API)"""
         try:
             #  截图
-            screenshot = pyautogui.screenshot()
+            screenshot = _screenshot()
             
             #  压缩 
             width, height = screenshot.size

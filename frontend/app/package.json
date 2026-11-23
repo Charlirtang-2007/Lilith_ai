@@ -1,7 +1,7 @@
 {
   "name": "lilith-pet",
-  "version": "0.2.0",
-  "description": "AI 桌面宠物前端（Tauri + SvelteKit + Live2D）",
+  "version": "0.3.0",
+  "description": "Lilith：Live2D 桌面伴侣（Tauri + SvelteKit）",
   "type": "module",
   "scripts": {
     "dev": "svelte-kit sync && vite dev",

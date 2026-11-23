@@ -223,9 +223,11 @@ backend/presence/
 
 ### 7.2 前端新增
 
-- `src/lib/presence.js`：收到 WS `presence_update` 后写 store
+- `src/lib/presence.svelte.js`：收到 WS `presence_update` 后写 store
 - `+page.svelte`：头顶状态小图标（🔕/😪/💢/💤）、"摸摸头"长按手势
-- `config.js`：扩展 `STATE_MOTIONS`（状态 → 动作组），与现有 `EMOTION_MOTIONS` 并存
+- `src/lib/expressions.js`：扩展 `PRESENCE_LOOKS`（状态 → look），复用现有
+  `LOOK_PRESETS` 参数层与 `.exp3` 文件层，不依赖模型 Motions
+- `Dock.svelte` / `Ambient.svelte`：状态徽章与氛围随 presence 状态切换
 
 ### 7.3 协议扩展
 
